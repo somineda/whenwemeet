@@ -1,0 +1,106 @@
+name: Code Quality Checks
+
+on:
+  pull_request:
+    branches:
+      - "main"
+      - "develop"
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up uv (Python + uv 설치)
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.13"   # 프로젝트 파이썬 버전에 맞게 조정 가능
+
+      - name: Install dependencies with uv (locked)
+        run: |
+          uv sync --locked          # uv.lock 기준으로 설치
+
+      - name: Set multiline environment variable
+        run: |
+          echo "${{ secrets.DJANGO_ENVS }}" >> $GITHUB_ENV
+
+      - name: Run isort (Import sorting)
+        run: |
+          uv run isort . --check --diff
+
+      - name: Run black (Code formatting)
+        run: |
+          uv run black . --check
+
+      - name: Run mypy
+        run: |
+          uv run mypy .
+
+
+  test:
+    runs-on: ubuntu-latest
+    needs: ci   # 코드 포맷/타입 체크 통과 후 테스트 실행 (원하면 빼도 됨)
+
+    services:
+      db:
+        image: pgvector/pgvector:0.8.0-pg14
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: pw1234
+          POSTGRES_DB: yours_scently_db
+          TZ: Asia/Seoul
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:latest
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up uv (Python + uv 설치)
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.13"
+
+      - name: Check for test functions
+        id: check-tests
+        run: |
+          if find apps -type f \( -name "tests.py" -o -name "test_*.py" \) -exec grep -q "def test_" {} +; then
+            echo "has_tests=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_tests=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install dependencies with uv (locked)
+        run: |
+          uv sync --locked
+
+      - name: Set multiline environment variable
+        run: |
+          echo "${{ secrets.DJANGO_ENVS }}" >> $GITHUB_ENV
+
+      - name: Run Django Migration
+        run: |
+          uv run python manage.py migrate
+
+      - name: Run tests with pytest
+        if: steps.check-tests.outputs.has_tests == 'true'
+        run: |
+          uv run pytest
